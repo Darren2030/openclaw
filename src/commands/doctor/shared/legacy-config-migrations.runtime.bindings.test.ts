@@ -2,6 +2,18 @@ import { describe, expect, it } from "vitest";
 import { findLegacyConfigIssues } from "../../../config/legacy.js";
 import { applyLegacyDoctorMigrations } from "./legacy-config-compat.js";
 
+type BindingEntry = {
+  match?: { channel?: string; peer?: { kind?: string; id?: string } };
+};
+
+function getBindingKinds(next: Record<string, unknown> | null): string[] {
+  const bindings = next?.bindings;
+  if (!Array.isArray(bindings)) {
+    return [];
+  }
+  return (bindings as BindingEntry[]).map((b) => b?.match?.peer?.kind ?? "");
+}
+
 describe("bindings peer.kind dm→direct migration", () => {
   it("detects legacy dm peer.kind in bindings", () => {
     const raw = {
@@ -27,7 +39,7 @@ describe("bindings peer.kind dm→direct migration", () => {
     };
     const result = applyLegacyDoctorMigrations(raw);
 
-    expect(result.next?.bindings?.[0]?.match?.peer?.kind).toBe("direct");
+    expect(getBindingKinds(result.next)).toEqual(["direct"]);
     expect(result.changes).toHaveLength(1);
     expect(result.changes[0]).toContain("dm");
     expect(result.changes[0]).toContain("direct");
@@ -52,9 +64,7 @@ describe("bindings peer.kind dm→direct migration", () => {
     };
     const result = applyLegacyDoctorMigrations(raw);
 
-    expect(result.next?.bindings?.[0]?.match?.peer?.kind).toBe("direct");
-    expect(result.next?.bindings?.[1]?.match?.peer?.kind).toBe("group");
-    expect(result.next?.bindings?.[2]?.match?.peer?.kind).toBe("direct");
+    expect(getBindingKinds(result.next)).toEqual(["direct", "group", "direct"]);
     expect(result.changes[0]).toContain("2");
   });
 
@@ -69,7 +79,6 @@ describe("bindings peer.kind dm→direct migration", () => {
     };
     const result = applyLegacyDoctorMigrations(raw);
 
-    // No migration needed when peer.kind is already canonical.
     expect(result.next).toBeNull();
     expect(result.changes).toHaveLength(0);
   });
