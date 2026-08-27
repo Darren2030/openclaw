@@ -1,5 +1,4 @@
 // Regression tests for Gemini empty candidate handling (issue #130550).
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { withFetchPreconnect } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import { createGeminiWebSearchProvider } from "./src/gemini-web-search-provider.js";
