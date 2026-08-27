@@ -36,8 +36,9 @@ export const LEGACY_CONFIG_MIGRATIONS_RUNTIME_BINDINGS: LegacyConfigMigrationSpe
       for (const binding of bindings) {
         const match = getRecord(binding)?.match;
         const peer = getRecord(match)?.peer;
-        if (getRecord(peer)?.kind === "dm") {
-          peer.kind = "direct";
+        const peerRecord = getRecord(peer);
+        if (peerRecord?.kind === "dm") {
+          peerRecord.kind = "direct";
           count += 1;
         }
       }
