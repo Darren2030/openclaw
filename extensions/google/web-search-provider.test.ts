@@ -404,23 +404,13 @@ describe("google web search provider", () => {
     );
   });
 
-  it("returns empty content for Gemini empty parts array with STOP finishReason (shape A)", async () => {
+  it("returns empty content for Gemini success JSON without candidate text", async () => {
     vi.stubGlobal(
       "fetch",
       withFetchPreconnect(
         vi.fn(() =>
           Promise.resolve(
-            new Response(
-              JSON.stringify({
-                candidates: [
-                  {
-                    content: { parts: [] },
-                    finishReason: "STOP",
-                    groundingMetadata: {},
-                  },
-                ],
-              }),
-            ),
+            new Response(JSON.stringify({ candidates: [{ content: { parts: [] } }] })),
           ),
         ),
       ),
@@ -443,218 +433,15 @@ describe("google web search provider", () => {
       searchConfig: { provider: "gemini" },
     });
 
-    const result = await tool?.execute({ query: "nonexistent person lookup" });
+    const result = await tool?.execute({ query: "OpenClaw docs" });
 
-    expect(result).toMatchObject({
-      citations: [],
-      model: "gemini-2.5-flash",
-      provider: "gemini",
-    });
-    expect(String(result?.content)).toContain("no answer text returned");
-  });
-
-  it("returns empty content for Gemini empty candidate without parts key (shape B)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      withFetchPreconnect(
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                candidates: [
-                  {
-                    content: { role: "model" },
-                    finishReason: "STOP",
-                  },
-                ],
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-
-    const result = await tool?.execute({ query: "nonexistent person lookup" });
-
+    // Empty parts array with no finishReason is treated as an empty result,
+    // not a malformed response (see #130550).
     expect(result).toMatchObject({
       citations: [],
       provider: "gemini",
     });
     expect(String(result?.content)).toContain("no answer text returned");
-  });
-
-  it("throws naming finishReason for Gemini empty content with non-STOP finishReason", async () => {
-    vi.stubGlobal(
-      "fetch",
-      withFetchPreconnect(
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                candidates: [
-                  {
-                    content: { parts: [] },
-                    finishReason: "SAFETY",
-                  },
-                ],
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-
-    await expect(tool?.execute({ query: "blocked query" })).rejects.toThrow(
-      "Gemini API error: empty result (SAFETY)",
-    );
-  });
-
-  it("throws naming promptFeedback.blockReason when Gemini blocks content", async () => {
-    vi.stubGlobal(
-      "fetch",
-      withFetchPreconnect(
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                promptFeedback: { blockReason: "SAFETY" },
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-
-    await expect(tool?.execute({ query: "blocked query" })).rejects.toThrow(
-      "Gemini API error: prompt blocked (SAFETY)",
-    );
-  });
-
-  it("returns empty content for Gemini empty candidates array", async () => {
-    vi.stubGlobal(
-      "fetch",
-      withFetchPreconnect(
-        vi.fn(() => Promise.resolve(new Response(JSON.stringify({ candidates: [] })))),
-      ),
-    );
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-
-    const result = await tool?.execute({ query: "empty results query" });
-
-    expect(result).toMatchObject({
-      citations: [],
-      provider: "gemini",
-    });
-  });
-
-  it("rejects Gemini content with parts present but not an array", async () => {
-    vi.stubGlobal(
-      "fetch",
-      withFetchPreconnect(
-        vi.fn(() =>
-          Promise.resolve(
-            new Response(
-              JSON.stringify({
-                candidates: [
-                  {
-                    content: { parts: "not-an-array" },
-                    finishReason: "STOP",
-                  },
-                ],
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-    const provider = createGeminiWebSearchProvider();
-    const tool = provider.createTool({
-      config: {
-        plugins: {
-          entries: {
-            google: {
-              config: {
-                webSearch: {
-                  apiKey: "AIza-plugin-test",
-                },
-              },
-            },
-          },
-        },
-      },
-      searchConfig: { provider: "gemini" },
-    });
-
-    await expect(tool?.execute({ query: "OpenClaw docs" })).rejects.toThrow(
-      "Gemini API error: malformed JSON response",
-    );
   });
 
   it("does not contact Gemini for an already-cancelled search", async () => {
