@@ -4,6 +4,7 @@ import {
   createProviderHttpError,
   formatProviderHttpErrorMessage,
   readProviderJsonObjectResponse,
+  truncateErrorDetail,
 } from "openclaw/plugin-sdk/provider-http";
 import {
   buildSearchCacheKey,
@@ -24,7 +25,7 @@ import {
   writeCachedSearchPayload,
 } from "openclaw/plugin-sdk/provider-web-search";
 import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
-import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isRecord, normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveGoogleApiClientHeaders } from "../google-api-client-header.js";
 import {
   resolveGeminiConfig,
@@ -38,33 +39,6 @@ type GeminiFreshness = "day" | "week" | "month" | "year";
 type GeminiTimeRangeFilter = {
   startTime: string;
   endTime: string;
-};
-
-type GeminiGroundingResponse = {
-  candidates?: Array<{
-    content?: {
-      parts?: Array<{
-        text?: string;
-      }>;
-    };
-    finishReason?: string;
-    groundingMetadata?: {
-      groundingChunks?: Array<{
-        web?: {
-          uri?: string;
-          title?: string;
-        };
-      }>;
-    };
-  }>;
-  promptFeedback?: {
-    blockReason?: string;
-  };
-  error?: {
-    code?: number;
-    message?: string;
-    status?: string;
-  };
 };
 
 const GEMINI_PROVIDER_OWNED_HEADER_NAMES = new Set([
@@ -313,76 +287,72 @@ async function runGeminiSearch(params: {
         throw new Error(error.message.replace(/key=[^&\s]+/giu, "key=***"));
       }
 
-      const data = (await readProviderJsonObjectResponse(
-        res,
-        "Gemini API error",
-      )) as GeminiGroundingResponse;
+      const data = await readProviderJsonObjectResponse(res, "Gemini API error");
 
-      if (data.error) {
-        const rawMessage = data.error.message || data.error.status || "unknown";
+      if (data.error !== undefined) {
+        if (!isRecord(data.error)) {
+          throwMalformedGeminiResponse();
+        }
+        const rawMessage =
+          normalizeOptionalString(data.error.message) ??
+          normalizeOptionalString(data.error.status) ??
+          "unknown";
         throw new Error(
           formatProviderHttpErrorMessage({
             label: "Gemini API error",
-            status: data.error.code ?? 0,
+            status: typeof data.error.code === "number" ? data.error.code : 0,
             detail: rawMessage.replace(/key=[^&\s]+/giu, "key=***"),
           }),
         );
       }
 
-      // Gemini returns promptFeedback.blockReason when content is blocked before
-      // generation. Report it explicitly so operators see the real cause.
-      if (isRecord(data.promptFeedback) && typeof data.promptFeedback.blockReason === "string") {
-        throw new Error(`Gemini API error: prompt blocked (${data.promptFeedback.blockReason})`);
-      }
-
-      if (!Array.isArray(data.candidates)) {
+      if (
+        (data.candidates !== undefined && !Array.isArray(data.candidates)) ||
+        (data.promptFeedback !== undefined && !isRecord(data.promptFeedback))
+      ) {
         throwMalformedGeminiResponse();
       }
-      if (data.candidates.length === 0) {
-        return { content: "", citations: [] };
-      }
-      const candidate = data.candidates[0];
-      if (!isRecord(candidate)) {
+      const candidate: unknown = data.candidates?.[0];
+      if (candidate !== undefined && !isRecord(candidate)) {
         throwMalformedGeminiResponse();
       }
-      // An empty candidate from a grounded search may omit the content object
-      // entirely (shape B) or include parts: [] (shape A). Only treat content
-      // as malformed when it exists but is not a record.
-      const candidateContent = candidate.content;
-      const parts = isRecord(candidateContent) ? candidateContent.parts : undefined;
+      const candidateContent = candidate?.content;
+      if (candidateContent !== undefined && !isRecord(candidateContent)) {
+        throwMalformedGeminiResponse();
+      }
+      const parts = candidateContent?.parts;
       if (parts !== undefined && !Array.isArray(parts)) {
         throwMalformedGeminiResponse();
       }
-      const content = Array.isArray(parts)
-        ? parts
-            .map((part) =>
-              isRecord(part) && typeof part.text === "string" ? part.text : undefined,
-            )
-            .filter((text): text is string => Boolean(text))
-            .join("\n")
-        : "";
-      // Empty content with a non-STOP finishReason means the model hit a safety
-      // filter, recitation limit, or policy block — report that, not "malformed".
-      const finishReason =
-        typeof candidate.finishReason === "string" ? candidate.finishReason : undefined;
-      if (!content && finishReason && finishReason !== "STOP") {
-        throw new Error(`Gemini API error: empty result (${finishReason})`);
-      }
-      const groundingMetadata = candidate.groundingMetadata;
-      const groundingChunks =
-        groundingMetadata === undefined
-          ? []
-          : isRecord(groundingMetadata)
-            ? groundingMetadata.groundingChunks === undefined
-              ? []
-              : Array.isArray(groundingMetadata.groundingChunks)
-                ? groundingMetadata.groundingChunks
-                : undefined
-            : undefined;
-      if (!groundingChunks) {
+      const content = (parts ?? [])
+        .map((part) => (isRecord(part) && typeof part.text === "string" ? part.text : undefined))
+        .filter((text): text is string => Boolean(text))
+        .join("\n");
+      const groundingMetadata = candidate?.groundingMetadata;
+      if (groundingMetadata !== undefined && !isRecord(groundingMetadata)) {
         throwMalformedGeminiResponse();
       }
-      const rawCitations = groundingChunks.flatMap((chunk) => {
+      const groundingChunks = groundingMetadata?.groundingChunks;
+      if (groundingChunks !== undefined && !Array.isArray(groundingChunks)) {
+        throwMalformedGeminiResponse();
+      }
+      if (!content) {
+        const reasons = [data.promptFeedback?.blockReason, candidate?.finishReason];
+        if (
+          reasons.some((reason) => reason !== undefined && typeof reason !== "string") ||
+          parts?.some(
+            (part) => !isRecord(part) || (part.text !== undefined && typeof part.text !== "string"),
+          )
+        ) {
+          throwMalformedGeminiResponse();
+        }
+        // No answer is not proof of zero search matches. Keep the thrown seam
+        // so explicit selection and automatic fallback retain their behavior.
+        const reason = reasons.map((value) => normalizeOptionalString(value)).find(Boolean);
+        const detail = reason ? ` (${truncateErrorDetail(reason, 120)})` : "";
+        throw new Error(`Gemini search returned no final answer${detail}.`);
+      }
+      const rawCitations = (groundingChunks ?? []).flatMap((chunk) => {
         if (!isRecord(chunk) || !isRecord(chunk.web) || typeof chunk.web.uri !== "string") {
           return [];
         }
@@ -405,7 +375,7 @@ async function runGeminiSearch(params: {
         citations.push(...resolved);
       }
 
-      return { content: content || "no answer text returned", citations };
+      return { content, citations };
     },
   );
 }
