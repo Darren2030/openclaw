@@ -1,5 +1,6 @@
 import { html, nothing } from "lit";
 import { resolveLocalUserName } from "../../../app/user-identity.ts";
+import type { BrowserTabSelection } from "../../../components/browser/browser-target.ts";
 import { icons } from "../../../components/icons.ts";
 import type { ImageLightboxItem } from "../../../components/image-lightbox.ts";
 import {
@@ -22,6 +23,7 @@ import { extractToolCardsCached } from "../../../lib/chat/tool-cards.ts";
 import type { EmbedSandboxMode } from "../../../lib/chat/tool-display.ts";
 import { fnv1aUtf16 } from "../../../lib/fnv1a.ts";
 import { resolveIdentityHue } from "../../../lib/identity-avatar.ts";
+import { parseAgentSessionKey } from "../../../lib/sessions/session-key.ts";
 import { renderChatAvatar } from "../chat-avatar.ts";
 import type { TurnRecap } from "../chat-progress.ts";
 import {
@@ -30,6 +32,7 @@ import {
   readPendingSendFailure,
   type AssistantMessageExpansionState,
 } from "../chat-thread.ts";
+import { assistantGroupIsForwardedBoundary } from "../chat-turn-boundary.ts";
 import type { LinkFaviconFetcher } from "../link-favicon-loader.ts";
 import { workspaceResultConflictFromTranscript } from "../workspace-conflict.ts";
 import { renderChatAuthorAvatar } from "./chat-author-avatar.ts";
@@ -53,6 +56,7 @@ import { extractGroupMeta, renderMessageMeta } from "./chat-message-timestamp.ts
 import type { SidebarContent, SidebarFullMessageLoader } from "./chat-sidebar.ts";
 import {
   isRunningToolCard,
+  renderBrowserTabPreviews,
   resolveToolRowText,
   shouldToggleSelectableDisclosure,
   syncToolDisclosureOverflow,
@@ -67,6 +71,7 @@ type ActiveContinuation = {
 type ReplyPreview = MessageReplyTarget & { sourceMessageId: string };
 
 type RenderMessageGroupOptions = {
+  latestBrowserTabs?: ReadonlyMap<string, BrowserTabSelection>;
   onOpenSidebar?: (content: SidebarContent) => void;
   onOpenWorkspaceFile?: (target: { path: string; line?: number | null }) => void;
   sessionKey?: string;
@@ -110,6 +115,7 @@ type RenderMessageGroupOptions = {
   contextWindow?: number | null;
   onReply?: (target: MessageReplyTarget) => void;
   onRetryQueuedMessage?: (id: string) => void;
+  queuedMessageAction?: { id: string; label?: string; onAction?: () => void };
   resolveReplyPreview?: (replyToId: string) => ReplyPreview | undefined;
   onResolveReply?: (replyToId: string) => void;
   onOpenReply?: (replyToId: string) => void;
@@ -120,6 +126,7 @@ type RenderMessageGroupOptions = {
   turnRecap?: TurnRecap;
   frameContent?: unknown;
   frameActionOwner?: MessageGroup["messages"][number] | null;
+  latestAssistant?: boolean;
 };
 
 type GroupedMessageRenderOptions = Parameters<typeof renderGroupedMessage>[2];
@@ -215,7 +222,10 @@ const USER_TURN_ENTRY_FRESH_SUBMIT_MS = 2_000;
 const USER_TURN_ENTRY_SEEN_CAP = 256;
 
 function isPeerSenderGroup(group: MessageGroup, userId: string | null | undefined): boolean {
-  return Boolean(group.sender && !(userId && group.sender.id === userId));
+  const identity = group.sender?.identity;
+  return Boolean(
+    group.sender && !(userId && identity?.type === "profile" && identity.id === userId),
+  );
 }
 
 function shouldAnimateUserTurnEntry(messageKey: string, message: unknown): boolean {
@@ -332,6 +342,7 @@ export function renderActivityGroup(
             )
           : nothing}
       </div>
+      ${renderBrowserTabPreviews(groups, opts)}
     </div>
   `;
   return presentation === "continuation"
@@ -386,7 +397,7 @@ export function renderMessageGroupContent(group: MessageGroup, opts: RenderMessa
     }
   }
   const who = resolveMessageGroupSenderLabel(group, opts);
-  return group.messages.map((item, index) => {
+  const messages = group.messages.map((item, index) => {
     const actionDetails = resolveMessageActionDetails({
       message: item.message,
       messageId: item.key,
@@ -416,6 +427,9 @@ export function renderMessageGroupContent(group: MessageGroup, opts: RenderMessa
       opts.onOpenSidebar,
     );
   });
+  return html`${messages}${opts.showToolCalls === false
+    ? nothing
+    : renderBrowserTabPreviews([group], opts)}`;
 }
 
 export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroupOptions) {
@@ -425,6 +439,15 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
   );
   const assistantName = opts.assistantName ?? "Assistant";
   const isPeerGroup = normalizedRole === "user" && isPeerSenderGroup(group, opts.userId);
+  const isForwarded =
+    normalizedRole === "assistant" &&
+    (Boolean(group.senderSession) || assistantGroupIsForwardedBoundary(group));
+  const sourceSessionKey = group.senderSession?.sessionKey;
+  // Only agent-prefixed keys are navigable: the titler, hovercard, and click
+  // handlers all reject other shapes, so a legacy key must stay plain text
+  // instead of becoming a focusable link that goes nowhere.
+  const linkableSourceKey =
+    sourceSessionKey && parseAgentSessionKey(sourceSessionKey) ? sourceSessionKey : undefined;
   const who = resolveMessageGroupSenderLabel(group, opts);
   const roleClass =
     normalizedRole === "user"
@@ -492,18 +515,19 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
     }
   }
   const lastMessageIndex = group.messages.length - 1;
-  const runFrameActive = ownsRunFrame && Boolean(group.isStreaming || opts.activeContinuation);
-  const footerActionDetails = runFrameActive
-    ? null
-    : ownsRunFrame
-      ? (messageActionDetails[0] ?? null)
-      : (messageActionDetails[lastMessageIndex] ?? null);
+  const footerActionDetails = ownsRunFrame
+    ? (messageActionDetails[0] ?? null)
+    : (messageActionDetails[lastMessageIndex] ?? null);
   const footerActionMessageKey = ownsRunFrame
     ? opts.frameActionOwner?.key
     : group.messages[lastMessageIndex]?.key;
   const hasUserFooterActions =
     normalizedRole === "user" &&
-    Boolean((footerActionDetails?.replyTarget && opts.onReply) || opts.onRewind);
+    Boolean(
+      (footerActionDetails?.replyTarget && opts.onReply) ||
+      opts.onRewind ||
+      footerActionDetails?.markdown,
+    );
   const userFooterActions = hasUserFooterActions
     ? html`
         <div
@@ -516,48 +540,93 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
           ${opts.onRewind
             ? renderRewindButton(opts.onRewind, Boolean(opts.rewindDisabled))
             : nothing}
+          ${footerActionDetails?.markdown
+            ? renderMessageActionButtons(footerActionDetails, {})
+            : nothing}
         </div>
       `
     : nothing;
 
-  // Attributed (logged-in) senders tint their bubbles with the same stable
-  // identity hue as their avatar initials; CSS owns per-theme lightness so
-  // the tint stays readable in both light and dark modes. Unattributed local
-  // messages keep the accent skin.
+  // Source sessions share the stable sender hue machinery; CSS owns contrast
+  // in each theme. Unattributed local messages keep the accent skin.
   const senderHue =
-    normalizedRole === "user" && group.sender ? resolveIdentityHue(group.sender) : null;
+    isForwarded && sourceSessionKey
+      ? resolveIdentityHue({ id: sourceSessionKey })
+      : normalizedRole === "user" && group.sender
+        ? resolveIdentityHue(group.sender)
+        : null;
   const sendFailure = readPendingSendFailure(group.messages.at(-1)?.message);
+  const sendAction =
+    opts.queuedMessageAction?.id === sendFailure?.id ? opts.queuedMessageAction : undefined;
   const replyToLabel =
     normalizedRole === "assistant" ? formatSenderLabel(group.replyToSender) : null;
   const replyToTitle = replyToLabel ? t("chat.messages.replyingTo", { name: replyToLabel }) : null;
 
   return html`
     <div
-      class="chat-group ${roleClass} chat-group--with-footer${isPeerGroup
-        ? " chat-group--peer"
+      class="chat-group ${roleClass} chat-group--with-footer${opts.latestAssistant
+        ? " chat-group--latest-assistant"
+        : ""}${isPeerGroup ? " chat-group--peer" : ""}${isForwarded
+        ? " chat-group--forwarded"
         : ""}${senderHue === null ? "" : " chat-group--sender-tint"}"
       style=${senderHue === null ? nothing : `--chat-sender-hue: ${senderHue}`}
       data-chat-row-key=${group.key}
     >
       ${normalizedRole !== "tool" &&
       showAvatarGutter &&
-      (normalizedRole !== "assistant" || opts.showAssistantAvatar !== false)
-        ? renderChatAvatar(
-            group.role,
-            {
-              name: assistantName,
-              avatar: opts.assistantAvatar ?? null,
-            },
-            {
-              name: opts.userName ?? null,
-              avatar: opts.userAvatar ?? null,
-            },
-            opts.resourceBasePath,
-            opts.assistantAttachmentAuthToken,
-            group.sender,
-          )
+      (isForwarded || normalizedRole !== "assistant" || opts.showAssistantAvatar !== false)
+        ? isForwarded
+          ? html`<div class="chat-avatar chat-avatar--forwarded" aria-hidden="true">
+              ${icons.forward}
+            </div>`
+          : renderChatAvatar(
+              group.role,
+              {
+                name: assistantName,
+                avatar: opts.assistantAvatar ?? null,
+              },
+              {
+                name: opts.userName ?? null,
+                avatar: opts.userAvatar ?? null,
+              },
+              opts.resourceBasePath,
+              opts.assistantAttachmentAuthToken,
+              group.sender,
+            )
         : nothing}
       <div class="chat-group-messages">
+        ${isForwarded
+          ? html`
+              <div class="chat-reply-attribution">
+                <span class="chat-reply-attribution__icon" aria-hidden="true"
+                  >${icons.forward}</span
+                >
+                ${linkableSourceKey
+                  ? // The titler owns child text (.textContent keeps Lit's part
+                    // out of it). A rendered group's source never changes:
+                    // messages are immutable and grouping splits on
+                    // senderSession, so no keyed remount is needed here.
+                    html`<span>${t("chat.messages.forwardedFrom")}</span>
+                      <a
+                        class="markdown-session-link"
+                        role="link"
+                        tabindex="0"
+                        data-session-key=${linkableSourceKey}
+                        .textContent=${linkableSourceKey}
+                      ></a>`
+                  : sourceSessionKey
+                    ? html`<span>${t("chat.messages.forwardedFrom")}</span>
+                        <span>${sourceSessionKey}</span>`
+                    : html`<span
+                        >${group.senderSession?.agentId
+                          ? t("chat.messages.forwardedFromAgent", {
+                              agentId: group.senderSession.agentId,
+                            })
+                          : t("chat.messages.forwardedMessage")}</span
+                      >`}
+              </div>
+            `
+          : nothing}
         ${replyToLabel
           ? html`
               <div class="chat-reply-attribution" title=${replyToTitle} aria-label=${replyToTitle}>
@@ -587,6 +656,9 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
               : nothing}
           `;
         })}
+        ${ownsRunFrame || opts.showToolCalls === false
+          ? nothing
+          : renderBrowserTabPreviews([group], opts)}
         ${opts.activeContinuation
           ? renderStreamGroupParts(
               opts.activeContinuation.parts,
@@ -597,7 +669,7 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
             ? renderTurnRecapRow(opts.turnRecap, { presentation: "continuation" })
             : nothing}
       </div>
-      ${normalizedRole === "tool"
+      ${normalizedRole === "tool" || group.isStreaming || opts.activeContinuation
         ? nothing
         : html`<div
             class="chat-group-footer ${persistUserIdentity
@@ -609,30 +681,43 @@ export function renderMessageGroup(group: MessageGroup, opts: RenderMessageGroup
               ${normalizedRole === "user" && !showAvatarGutter
                 ? renderChatAuthorAvatar(group.sender)
                 : nothing}
-              ${renderPersonName(
-                who,
-                // Only other people's messages: your own name links nowhere useful.
-                isPeerGroup ? personActivityLink(group.sender?.id, opts.personActivity) : null,
-                "chat-sender-name",
-              )}
+              ${isForwarded
+                ? nothing
+                : renderPersonName(
+                    who,
+                    // Only other people's messages: your own name links nowhere useful.
+                    isPeerGroup && group.sender?.identity?.type === "profile"
+                      ? personActivityLink(group.sender.identity.id, opts.personActivity)
+                      : null,
+                    "chat-sender-name",
+                  )}
               ${sendFailure
                 ? html`<span
                     class="chat-send-status"
                     title=${sendFailure.error ?? nothing}
-                    data-send-state="failed"
+                    data-send-state=${sendFailure.state}
                   >
                     <span aria-hidden="true">·</span>
-                    <span>${t("chat.queue.notSent")}</span>
-                    ${opts.onRetryQueuedMessage
+                    <span
+                      >${t(
+                        sendFailure.state === "unconfirmed"
+                          ? "chat.queue.deliveryUnconfirmed"
+                          : "chat.queue.notSent",
+                      )}</span
+                    >
+                    ${sendAction?.onAction || opts.onRetryQueuedMessage
                       ? html`
                           <span aria-hidden="true">·</span>
                           <button
                             class="chat-send-status__retry"
                             type="button"
-                            aria-label=${t("chat.queue.retryQueuedMessage")}
-                            @click=${() => opts.onRetryQueuedMessage?.(sendFailure.id)}
+                            aria-label=${sendAction?.label ?? t("chat.queue.retryQueuedMessage")}
+                            @click=${() =>
+                              sendAction?.onAction
+                                ? sendAction.onAction()
+                                : opts.onRetryQueuedMessage?.(sendFailure.id)}
                           >
-                            ${t("chat.queue.retry")}
+                            ${sendAction?.label ?? t("chat.queue.retry")}
                           </button>
                         `
                       : nothing}

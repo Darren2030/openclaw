@@ -9,6 +9,7 @@ import { extractTextCached } from "../../lib/chat/message-extract.ts";
 import { normalizeMessage, normalizeRoleForGrouping } from "../../lib/chat/message-normalizer.ts";
 import { senderIdentityKey } from "../../lib/chat/sender-label.ts";
 import { isContextCompactionActivity } from "./chat-progress.ts";
+import { userTurnSendIdentity } from "./chat-thread-items.ts";
 import {
   isKeyedAssistantStreamFallbackMessage,
   streamPartBoundaryId,
@@ -20,7 +21,7 @@ import {
   chatItemStartsUserTurn,
   safeNormalizeMessage,
 } from "./chat-turn-boundary.ts";
-import { indexTurnContinuations } from "./stream-causal-boundary.ts";
+import { indexTurnContinuations, persistedSteerTargetRunId } from "./stream-causal-boundary.ts";
 
 function stampReplyAttribution(
   items: Array<ChatItem | MessageGroup>,
@@ -48,6 +49,12 @@ function stampReplyAttribution(
       // A sender-less user group clears attribution: no chip is safer than
       // mislabeling the reply as addressed to the previous participant.
       latestUserSender = item.sender;
+    } else if (
+      item.role === "assistant" &&
+      (item.senderSession || assistantGroupIsForwardedBoundary(item))
+    ) {
+      // Forwarded input starts a turn without a local human reply recipient.
+      latestUserSender = undefined;
     } else if (item.role === "assistant" && latestUserSender) {
       item.replyToSender = latestUserSender;
     }
@@ -57,6 +64,7 @@ function stampReplyAttribution(
 export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup> {
   const result: Array<ChatItem | MessageGroup> = [];
   let currentGroup: MessageGroup | null = null;
+  let currentUserTurnIdentity: string | null = null;
 
   for (const item of items) {
     if (item.kind !== "message") {
@@ -76,6 +84,16 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
     const timestamp = normalized.timestamp || Date.now();
     const runId =
       role === "assistant" || role === "tool" ? transcriptRunId(item.message) : undefined;
+    // Independent sends own separate elapsed boundaries; consecutive steers
+    // before any output keep their target run's original start. Do not stamp
+    // user runIds onto groups: reply-less activity pooling uses that field.
+    const steerTarget = role === "user" ? persistedSteerTargetRunId(item.message) : null;
+    const userTurnIdentity =
+      role === "user"
+        ? steerTarget
+          ? `send:${steerTarget}`
+          : userTurnSendIdentity(item.message)
+        : null;
     const shouldSplitBySender = role === "user" || role === "assistant";
     const startsProjectedTurn =
       asRecord(asRecord(item.message)?.["__openclaw"])?.turnBoundary === true;
@@ -95,20 +113,24 @@ export function groupMessages(items: ChatItem[]): Array<ChatItem | MessageGroup>
       startsProjectedTurn ||
       currentGroup.role !== role ||
       currentGroup.runId !== runId ||
+      currentUserTurnIdentity !== userTurnIdentity ||
       splitsAssistantCommentary ||
       splitsRuntimeActivity ||
       (shouldSplitBySender &&
-        (currentGroup.senderLabel !== senderLabel ||
+        ((!sender?.identity && currentGroup.senderLabel !== senderLabel) ||
+          currentGroup.senderSession?.sessionKey !== normalized.senderSession?.sessionKey ||
           senderIdentityKey(currentGroup.sender) !== senderIdentityKey(sender)))
     ) {
       if (currentGroup) {
         result.push(currentGroup);
       }
+      currentUserTurnIdentity = userTurnIdentity;
       currentGroup = {
         kind: "group",
         key: `group:${role}:${item.key}`,
         role,
         senderLabel,
+        ...(normalized.senderSession ? { senderSession: normalized.senderSession } : {}),
         ...(sender ? { sender } : {}),
         messages: [{ message: item.message, key: item.key, duplicateCount: item.duplicateCount }],
         timestamp,

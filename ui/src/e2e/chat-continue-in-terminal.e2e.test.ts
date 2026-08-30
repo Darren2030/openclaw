@@ -3,7 +3,12 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { decodeResumeHandoff } from "../../../src/shared/resume-handoff.js";
 import type { ChatPaneElement } from "../pages/chat/route-draft-focus-handoff.ts";
-import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import {
+  controlUiSessionPath,
+  controlUiSessionUrl,
+  installMockGateway,
+  waitForControlUiRoute,
+} from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -14,7 +19,7 @@ const suite = createControlUiE2eSuite({
 });
 
 const artifactDir = path.resolve(process.cwd(), ".artifacts/control-ui-e2e/header-session-menu");
-const basePath = "/nested/$&;=()+,![]{}'`/%25PATH%25";
+const basePath = new URL("/nested/$&;=()+,![]{}'`/%25PATH%25", "http://localhost").pathname;
 const agentId = "runner";
 const sessionKey = `agent:${agentId}:main-'"$&;|<>^()%![]{}\\\`-%PATH%`;
 
@@ -55,9 +60,10 @@ const sharedManagementActions = [
   "Archive session",
   "Delete…",
 ] as const;
-const compactManagementActions = sharedManagementActions.filter(
-  (label) => label !== "Assign to me",
-);
+const compactManagementActions = sharedManagementActions
+  .filter((label) => label !== "Assign to me")
+  // Compact mode folds icon and color into one drill-down row.
+  .map((label) => (label === "Set icon" ? "Icon & color" : label));
 
 suite.define(() => {
   it("shows, copies, and retires a credential-free exact continuation command", async () => {
@@ -95,11 +101,20 @@ suite.define(() => {
         await context.grantPermissions(["clipboard-read", "clipboard-write"], {
           origin: pageUrl.origin,
         });
-        await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+        await page.goto(
+          controlUiSessionUrl(new URL(`${basePath}/`, suite.server.baseUrl).href, sessionKey),
+        );
         const activePane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active");
         await expect
           .poll(() => activePane.evaluate((pane) => (pane as ChatPaneElement).sessionKey))
           .toBe(sessionKey);
+        await waitForControlUiRoute(page, {
+          routeId: "chat",
+          pathname: controlUiSessionPath(sessionKey, basePath),
+          pathnamePrefix: `${basePath}/chat/`,
+          search: "",
+          hash: "",
+        });
         await activePane.getByText("Ready for terminal continuation.").waitFor({ timeout: 10_000 });
 
         const menuTrigger = activePane.getByRole("button", {
@@ -175,13 +190,16 @@ suite.define(() => {
           presenceUsers: [{ self: true, id: "profile-ada", name: "Ada" }],
           sessionKey,
         });
-        await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
+        await page.goto(
+          controlUiSessionUrl(new URL(`${basePath}/`, suite.server.baseUrl).href, sessionKey),
+        );
         const activePane = page.locator("openclaw-chat-pane.chat-pane-cache__pane--active");
         // Mock history also renders in the retained boot pane. Wait for this session's pane
         // before Playwright resolves a control that can stay mounted beneath its replacement.
         await expect
           .poll(() => activePane.evaluate((pane) => (pane as ChatPaneElement).sessionKey))
           .toBe(sessionKey);
+        await waitForControlUiRoute(page, { routeId: "chat" });
         await activePane
           .getByRole("paragraph")
           .filter({ hasText: /^Mobile session menu proof\.$/ })

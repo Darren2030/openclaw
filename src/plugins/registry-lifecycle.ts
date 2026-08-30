@@ -1,10 +1,18 @@
 /** Tracks active and retired plugin registries so stale runtime calls can be rejected. */
+import { PluginLoaderCacheState } from "./loader-cache-state.js";
 import type { PluginRecord, PluginRegistry } from "./registry-types.js";
+
+const MAX_PLUGIN_REGISTRY_CACHE_ENTRIES = 128;
+
+export const pluginLoaderCacheState = new PluginLoaderCacheState<PluginRegistry>(
+  MAX_PLUGIN_REGISTRY_CACHE_ENTRIES,
+);
 
 const retiredRegistries = new WeakSet<PluginRegistry>();
 const activatedRegistries = new WeakSet<PluginRegistry>();
 const registryEpochs = new WeakMap<PluginRegistry, object>();
 const recordEpochs = new WeakMap<PluginRegistry, WeakMap<PluginRecord, object>>();
+const revokedRecordEpoch = Object.freeze({});
 
 export type PluginRegistryLifecycleEpoch = object;
 type PluginRecordLifecycleEpoch = object;
@@ -14,6 +22,9 @@ export function markPluginRegistryRetired(registry: PluginRegistry | null | unde
   if (registry) {
     retiredRegistries.add(registry);
     registryEpochs.delete(registry);
+    // Retired registrations cannot be reused and retain their Gateway/cache generation.
+    // Release every cache key now, including keys that will never be looked up again.
+    pluginLoaderCacheState.deleteValue(registry);
   }
 }
 
@@ -82,7 +93,9 @@ export function revokePluginRecordLifecycleEpoch(
   registry: PluginRegistry,
   record: PluginRecord,
 ): void {
-  recordEpochs.get(registry)?.delete(record);
+  const epochs = recordEpochs.get(registry) ?? new WeakMap<PluginRecord, object>();
+  epochs.set(record, revokedRecordEpoch);
+  recordEpochs.set(registry, epochs);
 }
 
 /** True when a registry has been activated for runtime use. */
@@ -93,4 +106,29 @@ export function isPluginRegistryActivated(registry: PluginRegistry): boolean {
 /** True when a registry has been retired by a newer active registry. */
 export function isPluginRegistryRetired(registry: PluginRegistry): boolean {
   return retiredRegistries.has(registry);
+}
+
+/** Capture an activation; reactivating the same objects must not revive an old operation. */
+export function capturePluginLifecycleAuthority(
+  registry: PluginRegistry,
+  record?: PluginRecord,
+  options?: { scopedRuntime?: boolean },
+): (() => boolean) | undefined {
+  const epoch = registryEpochs.get(registry);
+  const recordEpoch = record && recordEpochs.get(registry)?.get(record);
+  if (
+    (!epoch && !options?.scopedRuntime) ||
+    retiredRegistries.has(registry) ||
+    recordEpoch === revokedRecordEpoch
+  ) {
+    return undefined;
+  }
+  return () =>
+    registryEpochs.get(registry) === epoch &&
+    !retiredRegistries.has(registry) &&
+    (!record ||
+      (registry.plugins.includes(record) &&
+        record.enabled &&
+        record.status === "loaded" &&
+        recordEpochs.get(registry)?.get(record) === recordEpoch));
 }

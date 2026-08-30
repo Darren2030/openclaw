@@ -14,6 +14,10 @@ export const telegramChannelConfigUiHints = {
     label: "Telegram Bot Token",
     help: "Telegram bot token used to authenticate Bot API requests for this account/provider config. Use secret/env substitution and rotate tokens if exposure is suspected.",
   },
+  joinIntro: {
+    label: "Telegram Group Join Introduction",
+    help: "Send one room-aware introduction when the bot joins an allowed group or supergroup (default: true). Telegram cannot provide message history from before the bot joined.",
+  },
   ...createChannelConfigUiHints({
     channelLabel: "Telegram",
     dmPolicy: { channelKey: "telegram" },
@@ -47,7 +51,7 @@ export const telegramChannelConfigUiHints = {
   }),
   richMessages: {
     label: "Telegram Rich Messages",
-    help: "Opt into Bot API 10.2 rich text sends and edits, including native tables and rich media. Default: false because some current Telegram clients render these messages as unsupported.",
+    help: "Opt into Bot API 10.3 rich text sends and edits, including native tables and rich media. Default: false because some current Telegram clients render these messages as unsupported.",
   },
   "network.autoSelectFamily": {
     label: "Telegram autoSelectFamily",

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { VerboseLevel } from "../auto-reply/thinking.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { notifyListeners, registerListener } from "../shared/listeners.js";
 import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage.js";
 
 /** Per-run metadata used to stamp events and gate Control UI visibility. */
@@ -61,7 +62,7 @@ type AgentRunRegistryState = {
   queuedRunContextLeases?: WeakMap<AgentRunContext, number>;
   lifecycleGeneration: string;
   sequenceResetHandler?: (runId: string) => void;
-  delegatedAuthorityClosedHandler?: (authority: AgentRunDelegatedAuthority) => void;
+  delegatedAuthorityClosedHandlers?: Set<(authority: AgentRunDelegatedAuthority) => void>;
   version: number;
 };
 
@@ -107,24 +108,16 @@ function notifyDelegatedAuthorityClosed(
   state: AgentRunRegistryState,
   authority: AgentRunDelegatedAuthority,
 ): void {
-  try {
-    state.delegatedAuthorityClosedHandler?.(authority);
-  } catch {
-    // Approval settlement observes lifecycle closure; it cannot block the owner transition.
-  }
+  // One observer cannot block closure or prevent other owners from canceling work.
+  notifyListeners(state.delegatedAuthorityClosedHandlers ?? [], authority);
 }
 
-/** Installs the Gateway-lifetime observer for exact delegated-authority closure. */
+/** Observe exact delegated-authority closure without displacing other lifecycle owners. */
 export function registerAgentRunDelegatedAuthorityClosedHandler(
   handler: (authority: AgentRunDelegatedAuthority) => void,
 ): () => void {
-  const state = getAgentRunRegistryState();
-  state.delegatedAuthorityClosedHandler = handler;
-  return () => {
-    if (state.delegatedAuthorityClosedHandler === handler) {
-      state.delegatedAuthorityClosedHandler = undefined;
-    }
-  };
+  const handlers = (getAgentRunRegistryState().delegatedAuthorityClosedHandlers ??= new Set());
+  return registerListener(handlers, handler);
 }
 
 /** Connects registry cleanup to the event sequencer without reversing ownership. */
@@ -527,9 +520,9 @@ export function listAgentRunsForSession(params: {
   const state = getAgentRunRegistryState();
   const runs: Array<{ runId: string; lifecycleGeneration: string }> = [];
   for (const [runId, context] of state.contexts) {
-    const matches = context.sessionId
-      ? context.sessionId === params.sessionId
-      : context.sessionKey === params.sessionKey;
+    const matches =
+      context.sessionKey === params.sessionKey &&
+      (!context.sessionId || context.sessionId === params.sessionId);
     if (matches && context.lifecycleGeneration === state.lifecycleGeneration) {
       runs.push({ runId, lifecycleGeneration: context.lifecycleGeneration });
     }

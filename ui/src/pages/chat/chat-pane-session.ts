@@ -11,12 +11,12 @@ import { clampText } from "../../lib/format.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import { readSessionMethodAccess } from "../../lib/session-method-access.ts";
 import {
+  summarizeSessionPullRequests,
   scopedSessionPullRequestKey,
   SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD,
   sessionPullRequestsForGateway,
 } from "../../lib/session-pull-requests.ts";
 import {
-  buildCatalogSessionKey,
   lookupCatalogSession,
   parseCatalogSessionKey,
   type CatalogSessionKey,
@@ -31,7 +31,6 @@ import {
   catalogRawResult,
   catalogRawString,
   nativeHistoryMessageIdentity,
-  summarizeSessionPullRequests,
 } from "./chat-pane-shared.ts";
 import { ChatPaneTaskSuggestions } from "./chat-pane-task-suggestions.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
@@ -372,7 +371,7 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
   }
 
   protected openCatalogSession(key: CatalogSessionKey, state: ChatPageHost) {
-    this.catalogRequestedSessionKey = buildCatalogSessionKey(key);
+    this.catalogRequestedSessionKey = this.sessionKey;
     this.catalogMessages = [];
     this.catalogCursor = undefined;
     this.catalogSession = null;
@@ -476,7 +475,7 @@ export abstract class ChatPaneSession extends ChatPaneTaskSuggestions {
     }
     const agentId = resolveChatAgentId(state);
     const generation = older ? this.catalogLoadGeneration : ++this.catalogLoadGeneration;
-    const requestedSessionKey = buildCatalogSessionKey(key);
+    const requestedSessionKey = this.sessionKey;
     const isCurrent = () =>
       generation === this.catalogLoadGeneration &&
       this.sessionKey === requestedSessionKey &&

@@ -24,8 +24,12 @@ import type { DiffStat } from "../../lib/chat/tool-call-diff.ts";
 import { formatUiError, formatUiExternalText } from "../../lib/format-error.ts";
 import { formatUnknownText, truncateText } from "../../lib/format.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
-import { uiSessionEventMatches } from "../../lib/sessions/session-key.ts";
+import {
+  uiSessionEventMatches,
+  type UiSessionDefaultsHost,
+} from "../../lib/sessions/session-key.ts";
 import type { ChatRunStartupState } from "./chat-run-startup.ts";
+import { readAssistantStreamSegmentIdentity } from "./chat-thread-run-identity.ts";
 import { rolloverChatStream } from "./stream-causal-boundary.ts";
 import { buildToolStreamIdentity } from "./tool-stream-identity.ts";
 
@@ -77,9 +81,10 @@ export type ToolStreamEntry = {
 export type ToolStreamHost = {
   sessionKey: string;
   assistantAgentId?: string | null;
-  agentsList?: { defaultId?: string | null } | null;
+  agentsList?: UiSessionDefaultsHost["agentsList"];
   hello?: { snapshot?: unknown } | null;
   chatRunId: string | null;
+  chatMessages?: unknown[];
   chatRunUsageById?: Map<string, number>;
   chatStream: string | null;
   chatStreamStartedAt: number | null;
@@ -864,6 +869,20 @@ function handlePreambleProgressEvent(host: ToolStreamHost, payload: AgentEventPa
   // Preambles belong to the visible run; a sibling run must never replace,
   // clear, or persist its commentary into this transcript.
   if (!resolveAcceptedSession(host, payload, { allowSessionScopedWhenIdle: true }).accepted) {
+    return true;
+  }
+  const persisted =
+    progress.itemId &&
+    host.chatMessages?.some((message) => {
+      const identity = readAssistantStreamSegmentIdentity(message);
+      return identity?.itemId === progress.itemId && identity?.runId === payload.runId;
+    });
+  if (persisted) {
+    // A history snapshot or delayed live event can follow the durable row.
+    // Its exact run/item owner already renders the commentary.
+    host.chatStreamSegments = host.chatStreamSegments.filter(
+      (segment) => segment.itemId !== progress.itemId || segment.runId !== payload.runId,
+    );
     return true;
   }
   if (progress.itemId && !progress.text.trim()) {

@@ -42,6 +42,7 @@ export type ManagerIndexFixtureConfig = {
     maxFileBytes?: number;
   };
   vectorEnabled?: boolean;
+  ftsTokenizer?: "unicode61" | "trigram";
   cacheEnabled?: boolean;
   minScore?: number;
   onSearch?: boolean;
@@ -431,9 +432,11 @@ export function createManagerIndexFixture(deps: {
           fallback: params.fallback,
           outputDimensionality: params.outputDimensionality,
           store: {
+            fts: params.ftsTokenizer ? { tokenizer: params.ftsTokenizer } : undefined,
             vector: params.vectorEnabled !== undefined ? { enabled: params.vectorEnabled } : {},
           },
           remote: params.batchEnabled ? { batch: { enabled: true } } : undefined,
+          sync: params.onSearch === undefined ? undefined : { onSearch: params.onSearch },
           query: { minScore: params.minScore ?? 0 },
           cache: params.cacheEnabled ? { enabled: true } : undefined,
           extraPaths: params.extraPaths,

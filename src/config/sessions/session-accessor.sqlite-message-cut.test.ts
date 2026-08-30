@@ -17,6 +17,8 @@ import {
   listSessionBranches,
   loadSessionEntry,
   loadTranscriptEvents,
+  listSessionParticipantsReadOnly,
+  recordSessionParticipant,
   readSessionTranscriptMessageEventPage,
   readSessionTranscriptMessageEvents,
   rewindSessionToMessage,
@@ -87,10 +89,15 @@ async function createSession(options: { activeLeafTarget?: string } = {}) {
     cliSessionBindings: { "claude-cli": { sessionId: "claude-conversation" } },
     cliSessionIds: { "claude-cli": "claude-conversation" },
     compactionCount: 2,
+    transcriptByteCompactionLatch: {
+      activeBytes: 20_000,
+      sessionId,
+      maxBytes: 10_000,
+    },
     contextTokens: 100_000,
     contextTokensSource: "runtime",
     createdVia: "operator",
-    createdActor: { type: "human", id: "profile-1" },
+    createdActor: { type: "human", source: "profile", id: "profile-1" },
     createdAt: 1_000,
     delivery: normalizeSessionDeliveryState({
       context: { channel: "telegram", to: "chat-123" },
@@ -494,10 +501,11 @@ describe("SQLite session message cuts", () => {
       cliSessionBindings: undefined,
       cliSessionIds: undefined,
       compactionCount: undefined,
+      transcriptByteCompactionLatch: undefined,
       contextTokens: undefined,
       contextTokensSource: undefined,
       createdVia: "operator",
-      createdActor: { type: "human", id: "profile-1" },
+      createdActor: { type: "human", source: "profile", id: "profile-1" },
       createdAt: 1_000,
       forkSource: { sessionKey: "agent:main:root", sessionId: "root-session" },
       previousSessionId: "message-cut-source",
@@ -573,6 +581,10 @@ describe("SQLite session message cuts", () => {
     const { env, scope } = await createSession();
     const canonicalSourceKey = "agent:main:canonical-message-cut-source";
     const targetKey = "agent:main:dashboard:message-cut-fork";
+    recordSessionParticipant(scope, {
+      identity: { type: "profile", id: "source-person" },
+      promptedAt: 7,
+    });
 
     const result = await forkSessionAtMessage({
       agentId,
@@ -607,6 +619,15 @@ describe("SQLite session message cuts", () => {
       ),
     ).toEqual([result.entry.sessionId, "user-1", "assistant-1"]);
     expect(loadSessionEntry(scope)?.sessionId).toBe(scope.sessionId);
+    expect(listSessionParticipantsReadOnly({ agentId, env }).get(targetKey)).toBeUndefined();
+    expect(listSessionParticipantsReadOnly({ agentId, env }).get(sessionKey)).toEqual([
+      {
+        identity: { type: "profile", id: "source-person" },
+        contributionCount: 1,
+        firstPromptedAt: 7,
+        lastPromptedAt: 7,
+      },
+    ]);
     expect(result.entry.lifecycleRevision).not.toBe("source-lifecycle-revision");
     expect((result.entry as InternalSessionEntry).lifecycleRunId).toBeUndefined();
     expect((result.entry as InternalSessionEntry).lastRunId).toBeUndefined();

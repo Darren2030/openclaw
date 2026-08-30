@@ -66,6 +66,11 @@ function buildDirectChildSessionPatch(patch: Record<string, unknown>): Partial<S
   if (typeof patch.thinkingLevel === "string" && patch.thinkingLevel.trim()) {
     entry.thinkingLevel = patch.thinkingLevel.trim();
   }
+  const authProfileOverride = normalizeOptionalString(patch.authProfileOverride);
+  if (authProfileOverride) {
+    entry.authProfileOverride = authProfileOverride;
+    entry.authProfileOverrideSource = patch.authProfileOverrideSource === "auto" ? "auto" : "user";
+  }
   if (patch.fastMode === true || patch.fastMode === false || patch.fastMode === "auto") {
     entry.fastMode = patch.fastMode;
   }
@@ -112,7 +117,7 @@ export async function createInitialSubagentSession(params: {
   childSessionKey: string;
   incognito: boolean;
   requesterInternalKey: string;
-  requesterAgentId: string;
+  creationPolicy: Pick<Parameters<typeof buildSessionCreationStamp>[0], "actor" | "sandbox">;
   completionOwnerSessionKey: string;
   spawnedWorkspaceDir?: string;
   spawnedCwd?: string;
@@ -179,7 +184,7 @@ export async function createInitialSubagentSession(params: {
         ...childSessionIdentity,
         ...buildSessionCreationStamp({
           via: "spawn",
-          actor: { type: "agent", id: params.requesterAgentId },
+          ...params.creationPolicy,
         }),
       },
     );

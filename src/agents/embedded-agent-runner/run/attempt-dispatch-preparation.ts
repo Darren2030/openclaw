@@ -55,9 +55,15 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
     provider,
     modelId,
   } = input;
-  const params = input.terminalRetryState.forceCodeModeReconciliationTools
-    ? { ...runInput.runParams, forceCodeModeReconciliationTools: true }
-    : runInput.runParams;
+  const codeModeRecovery = terminalRetryState.codeModeRecovery;
+  const params =
+    codeModeRecovery.kind === "resume"
+      ? {
+          ...runInput.runParams,
+          codeModeOverride: false,
+          forceCodeModeTools: false,
+        }
+      : runInput.runParams;
   const {
     workspaceResolution,
     workspaceDir,
@@ -141,6 +147,10 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
           ...sessionPromptState.sessionWriterFence,
         }
       : undefined;
+  await sessionPromptState.settleOwnedTranscriptProjection(
+    resolvedSessionTarget,
+    params.abortSignal,
+  );
   const trajectorySessionFile = resolvedSessionTarget?.sessionKey ?? sessionPromptState.sessionFile;
   if (!input.startupStagesEmitted) {
     startupStages.mark(EMBEDDED_RUN_ATTEMPT_DISPATCH_STAGE.prompt);
@@ -222,6 +232,8 @@ export async function prepareAndDispatchEmbeddedRunAttempt(input: {
   });
   const dispatchedAttempt = await dispatchEmbeddedRunAttempt({
     params,
+    codeModeRecovery: codeModeRecovery.kind === "idle" ? undefined : codeModeRecovery,
+    runStartedAtMs: runInput.startedAtMs,
     transcriptOwnership: params.sessionManager
       ? { kind: "caller-owned", sessionManager: params.sessionManager }
       : { kind: "runtime-target", sessionTarget: resolvedSessionTarget },

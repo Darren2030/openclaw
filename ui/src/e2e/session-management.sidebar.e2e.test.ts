@@ -1,9 +1,11 @@
 import path from "node:path";
 import { expect, it } from "vitest";
+import type { ChatPaneElement } from "../pages/chat/route-draft-focus-handoff.ts";
 import {
   waitForControlUiGatewayReady,
   waitForControlUiGatewayReconnecting,
 } from "../test-helpers/control-ui-e2e-readiness.ts";
+import { waitForControlUiRoute } from "../test-helpers/control-ui-e2e.ts";
 import { expectRequestCountStable } from "./chat-flow.test-support.ts";
 import {
   actionOpacity,
@@ -79,8 +81,19 @@ suite.define(() => {
       await draft.waitFor();
 
       await homeRow.click();
-      await expect.poll(() => new URL(page.url()).pathname).toBe(controlUiSessionPath(mainKey));
+      await waitForControlUiRoute(page, {
+        pathname: controlUiSessionPath(mainKey),
+        routeId: "chat",
+      });
       await draft.waitFor();
+      const presentedPanes = page.locator('openclaw-chat-pane[aria-hidden="false"]');
+      await expect
+        .poll(() =>
+          presentedPanes.evaluateAll((panes) =>
+            panes.map((pane) => (pane as ChatPaneElement).sessionKey),
+          ),
+        )
+        .toEqual([mainKey]);
 
       await composer.fill("");
       await secondRow.getByRole("link").click();
@@ -514,7 +527,7 @@ suite.define(() => {
     });
 
     try {
-      await page.goto(`${suite.server.baseUrl}chat`);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, sessionKey));
       const sidebarRow = page.locator(`.sidebar-recent-session[data-session-key="${sessionKey}"]`);
       const pinnedEntry = page.locator(`[data-sidebar-entry="session:${sessionKey}"]`);
       await sidebarRow.waitFor({ state: "visible", timeout: 10_000 });
@@ -689,7 +702,7 @@ suite.define(() => {
     });
 
     try {
-      await page.goto(`${suite.server.baseUrl}chat`);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:pinned"));
 
       const pinnedEntry = page.locator('[data-sidebar-entry="session:agent:main:pinned"]');
       const chatsGroup = page.locator('[data-session-section="ungrouped"]');
@@ -774,7 +787,7 @@ suite.define(() => {
     });
 
     try {
-      await page.goto(`${suite.server.baseUrl}chat`);
+      await page.goto(controlUiSessionUrl(suite.server.baseUrl, "agent:main:candidate"));
 
       const pinnedEntry = page.locator('[data-sidebar-entry="session:agent:main:pinned"]');
       const researchGroup = page.locator('[data-session-section="category:Research"]');
@@ -860,6 +873,9 @@ suite.define(() => {
       viewport: { height: 900, width: 1280 },
     });
     const page = await context.newPage();
+    await page.addInitScript(() => {
+      localStorage.setItem("openclaw:sidebar:sessions:show-preview", "true");
+    });
     const gateway = await installMockGateway(page, {
       methodResponses: {
         "sessions.list": sessionsListResponse(rows(false)),

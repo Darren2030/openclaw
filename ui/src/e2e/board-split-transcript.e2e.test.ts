@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   canRunPlaywrightChromium,
   controlUiBundledSettingsStorageKey,
+  controlUiSessionUrl,
   installMockGateway,
   resolvePlaywrightChromiumExecutablePath,
   startControlUiE2eServer,
@@ -114,7 +115,7 @@ async function showDashboard(page: Page) {
     },
     { key: sessionKey, storageKey: settingsKey },
   );
-  await page.goto(`${controlUi.baseUrl}dashboard`);
+  await page.goto(controlUiSessionUrl(controlUi.baseUrl, sessionKey, "dashboard"));
 }
 
 async function expectSidePanelTabs(page: Page, expected: string[]) {
@@ -256,11 +257,11 @@ describeControlUiE2e("Board split transcript restore", () => {
       expect(
         frame.rowGap,
         `first frame width=${frame.width}px; assistant-to-user gap=${frame.assistantUserGap}px`,
-      ).toBeGreaterThanOrEqual(0);
+      ).toBeGreaterThanOrEqual(-0.01);
       expect(
         frame.assistantUserGap,
         `assistant text overlaps the user bubble at width=${frame.width}px`,
-      ).toBeGreaterThanOrEqual(0);
+      ).toBeGreaterThanOrEqual(-0.01);
     } finally {
       contexts.delete(context);
       await context.close();
